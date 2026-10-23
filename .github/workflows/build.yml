@@ -1,211 +1,219 @@
 name: Build APK
-on: [push, workflow_dispatch]
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      
-      - uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          
-      - uses: android-actions/setup-android@v3
-      
-      - name: Create Project Files
-        run: |
-          mkdir -p app/src/main/java/com/stresstest app/src/main/res/values
-          
-          cat << 'EOF' > settings.gradle.kts
-          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
-          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
-          rootProject.name = "StressTest"
-          include(":app")
-          EOF
-          
-          cat << 'EOF' > build.gradle.kts
-          plugins {
-              id("com.android.application") version "8.5.0" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
-          }
-          EOF
-          
-          cat << 'EOF' > gradle.properties
-          org.gradle.jvmargs=-Xmx2048m
-          android.useAndroidX=true
-          EOF
-          
-          cat << 'EOF' > app/build.gradle.kts
-          plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
-          }
-          android {
-              namespace = "com.stresstest"
-              compileSdk = 34
-              defaultConfig {
-                  applicationId = "com.stresstest"
-                  minSdk = 26
-                  targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
-              }
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-              kotlinOptions { jvmTarget = "17" }
-          }
-          dependencies { implementation("androidx.appcompat:appcompat:1.7.0") }
-          EOF
-          
-          cat << 'EOF' > app/src/main/res/values/themes.xml
-          <resources>
-              <style name="Theme.AppCompat" parent="Theme.AppCompat.DayNight"/>
-          </resources>
-          EOF
-          
-          cat << 'EOF' > app/src/main/AndroidManifest.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
-              <uses-permission android:name="android.permission.WAKE_LOCK"/>
-              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-              <application android:allowBackup="false" android:label="StressTest" android:theme="@style/Theme.AppCompat">
-                  <activity android:name=".MainActivity" android:exported="true">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN"/>
-                          <category android:name="android.intent.category.LAUNCHER"/>
-                      </intent-filter>
-                  </activity>
-                  <service android:name=".CpuStressService" android:foregroundServiceType="specialUse" android:exported="false"/>
-                  <service android:name=".MemHogService" android:foregroundServiceType="specialUse" android:exported="false"/>
-              </application>
-          </manifest>
-          EOF
-          
-          cat << 'EOF' > app/src/main/java/com/stresstest/MainActivity.kt
-          package com.stresstest
-          import android.content.Intent
-          import android.os.Build
-          import android.os.Bundle
-          import android.widget.Button
-          import android.widget.LinearLayout
-          import android.widget.ScrollView
-          import android.widget.TextView
-          import androidx.appcompat.app.AppCompatActivity
-          class MainActivity : AppCompatActivity() {
-              private val services = listOf(CpuStressService::class.java, MemHogService::class.java)
-              private val names = listOf("CPU STRESS", "MEM HOG")
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
-                  val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 48, 48, 48) }
-                  root.addView(TextView(this).apply { text = "STRESS TEST"; textSize = 18f })
-                  services.forEachIndexed { i, cls ->
-                      root.addView(Button(this).apply {
-                          text = "START: " + names[i]
-                          setOnClickListener { startService(Intent(this@MainActivity, cls)) }
-                      })
-                  }
-                  root.addView(Button(this).apply {
-                      text = "STOP ALL"
-                      setOnClickListener { services.forEach { stopService(Intent(this@MainActivity, it)) } }
-                  })
-                  root.addView(Button(this).apply {
-                      text = "START ALL"
-                      setOnClickListener { services.forEach { startService(Intent(this@MainActivity, it)) } }
-                  })
-                  setContentView(ScrollView(this).apply { addView(root) })
-              }
-          }
-          EOF
-          
-          cat << 'EOF' > app/src/main/java/com/stresstest/CpuStressService.kt
-          package com.stresstest
-          import android.app.*
-          import android.content.Intent
-          import android.os.IBinder
-          import java.util.concurrent.atomic.AtomicBoolean
-          class CpuStressService : Service() {
-              private val running = AtomicBoolean(true)
-              private val threads = mutableListOf<Thread>()
-              private val WORKERS = Runtime.getRuntime().availableProcessors() * 4
-              override fun onCreate() {
-                  super.onCreate()
-                  startForeground(1, notif())
-                  repeat(WORKERS) { idx ->
-                      val t = Thread {
-                          var x = idx.toDouble()
-                          while (running.get()) {
-                              x += Math.sqrt(x + 1.0) * Math.sin(x) / (Math.cos(x) + 2.0)
-                              if (x.isNaN() || x > 1e10) x = idx.toDouble()
-                          }
-                      }
-                      t.priority = Thread.MAX_PRIORITY
-                      t.start()
-                      threads.add(t)
-                  }
-              }
-              private fun notif(): Notification {
-                  val chId = "stress"
-                  getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Stress", NotificationManager.IMPORTANCE_LOW))
-                  return Notification.Builder(this, chId).setContentTitle("CPU STRESS").setSmallIcon(android.R.drawable.ic_dialog_alert).build()
-              }
-              override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
-              override fun onBind(i: Intent?): IBinder? = null
-              override fun onDestroy() { running.set(false); threads.forEach { it.interrupt() }; super.onDestroy() }
-          }
-          EOF
-          
-          cat << 'EOF' > app/src/main/java/com/stresstest/MemHogService.kt
-          package com.stresstest
-          import android.app.*
-          import android.content.Intent
-          import android.os.IBinder
-          import java.util.concurrent.atomic.AtomicBoolean
-          class MemHogService : Service() {
-              private val running = AtomicBoolean(true)
-              private val hog = mutableListOf<ByteArray>()
-              private val CHUNK = 32 * 1024 * 1024
-              override fun onCreate() {
-                  super.onCreate()
-                  startForeground(2, notif())
-                  Thread {
-                      while (running.get()) {
-                          try {
-                              val b = ByteArray(CHUNK)
-                              var i = 0
-                              while (i < b.size) { b[i] = 0x5A; i += 4096 }
-                              hog.add(b)
-                          } catch (e: OutOfMemoryError) {
-                              try { repeat(32) { hog.add(ByteArray(1024 * 1024)) } } catch (_: OutOfMemoryError) {}
-                              Thread.sleep(100)
-                          }
-                      }
-                  }.start()
-              }
-              private fun notif(): Notification {
-                  val chId = "mem"
-                  getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Mem", NotificationManager.IMPORTANCE_LOW))
-                  return Notification.Builder(this, chId).setContentTitle("MEM HOG").setSmallIcon(android.R.drawable.ic_dialog_info).build()
-              }
-              override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
-              override fun onBind(i: Intent?): IBinder? = null
-              override fun onDestroy() { running.set(false); hog.clear(); super.onDestroy() }
-          }
-          EOF
+    runs-on: ubuntu-latest
 
-      - name: Build APK
-        run: |
-          gradle wrapper --gradle-version 8.7
-          chmod +x gradlew
-          ./gradlew assembleDebug
-          
-      - uses: actions/upload-artifact@v4
-        with:
-          name: StressTest-APK
-          path: app/build/outputs/apk/debug/*.apk
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Create Project Files
+      run: |
+        mkdir -p app/src/main/java/com/stresstest app/src/main/res/values
+        
+        cat > settings.gradle.kts << 'EOF'
+        pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+        dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+        rootProject.name = "StressTest"
+        include(":app")
+        EOF
+        
+        cat > build.gradle.kts << 'EOF'
+        plugins {
+            id("com.android.application") version "8.5.0" apply false
+            id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+        }
+        EOF
+        
+        cat > gradle.properties << 'EOF'
+        org.gradle.jvmargs=-Xmx2048m
+        android.useAndroidX=true
+        EOF
+        
+        cat > app/build.gradle.kts << 'EOF'
+        plugins {
+            id("com.android.application")
+            id("org.jetbrains.kotlin.android")
+        }
+        android {
+            namespace = "com.stresstest"
+            compileSdk = 34
+            defaultConfig {
+                applicationId = "com.stresstest"
+                minSdk = 26
+                targetSdk = 34
+                versionCode = 1
+                versionName = "1.0"
+            }
+            compileOptions {
+                sourceCompatibility = JavaVersion.VERSION_17
+                targetCompatibility = JavaVersion.VERSION_17
+            }
+            kotlinOptions { jvmTarget = "17" }
+        }
+        dependencies { implementation("androidx.appcompat:appcompat:1.7.0") }
+        EOF
+        
+        cat > app/src/main/res/values/themes.xml << 'EOF'
+        <resources>
+            <style name="Theme.AppCompat" parent="Theme.AppCompat.DayNight"/>
+        </resources>
+        EOF
+        
+        cat > app/src/main/AndroidManifest.xml << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+            <uses-permission android:name="android.permission.WAKE_LOCK"/>
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+            <application android:allowBackup="false" android:label="StressTest" android:theme="@style/Theme.AppCompat">
+                <activity android:name=".MainActivity" android:exported="true">
+                    <intent-filter>
+                        <action android:name="android.intent.action.MAIN"/>
+                        <category android:name="android.intent.category.LAUNCHER"/>
+                    </intent-filter>
+                </activity>
+                <service android:name=".CpuStressService" android:foregroundServiceType="specialUse" android:exported="false"/>
+                <service android:name=".MemHogService" android:foregroundServiceType="specialUse" android:exported="false"/>
+            </application>
+        </manifest>
+        EOF
+        
+        cat > app/src/main/java/com/stresstest/MainActivity.kt << 'EOF'
+        package com.stresstest
+        import android.content.Intent
+        import android.os.Build
+        import android.os.Bundle
+        import android.widget.Button
+        import android.widget.LinearLayout
+        import android.widget.ScrollView
+        import android.widget.TextView
+        import androidx.appcompat.app.AppCompatActivity
+        class MainActivity : AppCompatActivity() {
+            private val services = listOf(CpuStressService::class.java, MemHogService::class.java)
+            private val names = listOf("CPU STRESS", "MEM HOG")
+            override fun onCreate(savedInstanceState: Bundle?) {
+                super.onCreate(savedInstanceState)
+                if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
+                val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 48, 48, 48) }
+                root.addView(TextView(this).apply { text = "STRESS TEST"; textSize = 18f })
+                services.forEachIndexed { i, cls ->
+                    root.addView(Button(this).apply {
+                        text = "START: " + names[i]
+                        setOnClickListener { startService(Intent(this@MainActivity, cls)) }
+                    })
+                }
+                root.addView(Button(this).apply {
+                    text = "STOP ALL"
+                    setOnClickListener { services.forEach { stopService(Intent(this@MainActivity, it)) } }
+                })
+                root.addView(Button(this).apply {
+                    text = "START ALL"
+                    setOnClickListener { services.forEach { startService(Intent(this@MainActivity, it)) } }
+                })
+                setContentView(ScrollView(this).apply { addView(root) })
+            }
+        }
+        EOF
+        
+        cat > app/src/main/java/com/stresstest/CpuStressService.kt << 'EOF'
+        package com.stresstest
+        import android.app.*
+        import android.content.Intent
+        import android.os.IBinder
+        import java.util.concurrent.atomic.AtomicBoolean
+        class CpuStressService : Service() {
+            private val running = AtomicBoolean(true)
+            private val threads = mutableListOf<Thread>()
+            private val WORKERS = Runtime.getRuntime().availableProcessors() * 4
+            override fun onCreate() {
+                super.onCreate()
+                startForeground(1, notif())
+                repeat(WORKERS) { idx ->
+                    val t = Thread {
+                        var x = idx.toDouble()
+                        while (running.get()) {
+                            x += Math.sqrt(x + 1.0) * Math.sin(x) / (Math.cos(x) + 2.0)
+                            if (x.isNaN() || x > 1e10) x = idx.toDouble()
+                        }
+                    }
+                    t.priority = Thread.MAX_PRIORITY
+                    t.start()
+                    threads.add(t)
+                }
+            }
+            private fun notif(): Notification {
+                val chId = "stress"
+                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Stress", NotificationManager.IMPORTANCE_LOW))
+                return Notification.Builder(this, chId).setContentTitle("CPU STRESS").setSmallIcon(android.R.drawable.ic_dialog_alert).build()
+            }
+            override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
+            override fun onBind(i: Intent?): IBinder? = null
+            override fun onDestroy() { running.set(false); threads.forEach { it.interrupt() }; super.onDestroy() }
+        }
+        EOF
+        
+        cat > app/src/main/java/com/stresstest/MemHogService.kt << 'EOF'
+        package com.stresstest
+        import android.app.*
+        import android.content.Intent
+        import android.os.IBinder
+        import java.util.concurrent.atomic.AtomicBoolean
+        class MemHogService : Service() {
+            private val running = AtomicBoolean(true)
+            private val hog = mutableListOf<ByteArray>()
+            private val CHUNK = 32 * 1024 * 1024
+            override fun onCreate() {
+                super.onCreate()
+                startForeground(2, notif())
+                Thread {
+                    while (running.get()) {
+                        try {
+                            val b = ByteArray(CHUNK)
+                            var i = 0
+                            while (i < b.size) { b[i] = 0x5A; i += 4096 }
+                            hog.add(b)
+                        } catch (e: OutOfMemoryError) {
+                            try { repeat(32) { hog.add(ByteArray(1024 * 1024)) } } catch (_: OutOfMemoryError) {}
+                            Thread.sleep(100)
+                        }
+                    }
+                }.start()
+            }
+            private fun notif(): Notification {
+                val chId = "mem"
+                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Mem", NotificationManager.IMPORTANCE_LOW))
+                return Notification.Builder(this, chId).setContentTitle("MEM HOG").setSmallIcon(android.R.drawable.ic_dialog_info).build()
+            }
+            override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
+            override fun onBind(i: Intent?): IBinder? = null
+            override fun onDestroy() { running.set(false); hog.clear(); super.onDestroy() }
+        }
+        EOF
+
+    - name: Build Debug APK
+      run: |
+        gradle wrapper --gradle-version 8.7
+        chmod +x gradlew
+        ./gradlew assembleDebug
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: StressTest-APK
+        path: app/build/outputs/apk/debug/*.apk
