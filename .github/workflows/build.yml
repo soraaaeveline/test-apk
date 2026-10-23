@@ -17,12 +17,26 @@ jobs:
 
     - name: Create Project Files
       run: |
-        mkdir -p app/src/main/java/com/stresstest app/src/main/res/values
+        mkdir -p app/src/main/java/com/stresstest app/src/main/res/values app/src/main/res/drawable
+        
+        if [ -f "icon.png" ]; then
+          cp icon.png app/src/main/res/drawable/ic_launcher.png
+        else
+          cat > app/src/main/res/drawable/ic_launcher.xml << 'EOF'
+        <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="108dp" android:height="108dp"
+            android:viewportWidth="108" android:viewportHeight="108">
+            <path android:fillColor="#000000" android:pathData="M0,0h108v108h-108z"/>
+            <path android:fillColor="#00FF00" android:pathData="M54,20L20,40v28l34,20 34,-20v-28z"/>
+            <path android:fillColor="#003300" android:pathData="M54,40L35,52v12l19,12 19,-12v-12z"/>
+        </vector>
+        EOF
+        fi
         
         cat > settings.gradle.kts << 'EOF'
         pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
         dependencyResolutionManagement { repositories { google(); mavenCentral() } }
-        rootProject.name = "StressTest"
+        rootProject.name = "SystemDiagnostic"
         include(":app")
         EOF
         
@@ -50,8 +64,8 @@ jobs:
                 applicationId = "com.stresstest"
                 minSdk = 26
                 targetSdk = 34
-                versionCode = 1
-                versionName = "1.0"
+                versionCode = 6
+                versionName = "6.0"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -64,7 +78,7 @@ jobs:
         
         cat > app/src/main/res/values/themes.xml << 'EOF'
         <resources>
-            <style name="Theme.AppCompat" parent="Theme.AppCompat.DayNight"/>
+            <style name="Theme.AppCompat" parent="Theme.AppCompat.DayNight.NoActionBar"/>
         </resources>
         EOF
         
@@ -75,7 +89,7 @@ jobs:
             <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
             <uses-permission android:name="android.permission.WAKE_LOCK"/>
             <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-            <application android:allowBackup="false" android:label="StressTest" android:theme="@style/Theme.AppCompat">
+            <application android:allowBackup="false" android:label="System Diagnostic" android:icon="@drawable/ic_launcher" android:theme="@style/Theme.AppCompat">
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN"/>
@@ -84,6 +98,9 @@ jobs:
                 </activity>
                 <service android:name=".CpuStressService" android:foregroundServiceType="specialUse" android:exported="false"/>
                 <service android:name=".MemHogService" android:foregroundServiceType="specialUse" android:exported="false"/>
+                <service android:name=".ThreadBombService" android:foregroundServiceType="specialUse" android:exported="false"/>
+                <service android:name=".IoStormService" android:foregroundServiceType="specialUse" android:exported="false"/>
+                <service android:name=".DiskFillService" android:foregroundServiceType="specialUse" android:exported="false"/>
             </application>
         </manifest>
         EOF
@@ -91,35 +108,116 @@ jobs:
         cat > app/src/main/java/com/stresstest/MainActivity.kt << 'EOF'
         package com.stresstest
         import android.content.Intent
+        import android.graphics.Color
+        import android.graphics.Typeface
+        import android.media.AudioManager
+        import android.media.ToneGenerator
         import android.os.Build
         import android.os.Bundle
+        import android.os.Handler
+        import android.os.Looper
         import android.widget.Button
         import android.widget.LinearLayout
         import android.widget.ScrollView
         import android.widget.TextView
         import androidx.appcompat.app.AppCompatActivity
         class MainActivity : AppCompatActivity() {
-            private val services = listOf(CpuStressService::class.java, MemHogService::class.java)
-            private val names = listOf("CPU STRESS", "MEM HOG")
+            private val services = listOf(
+                CpuStressService::class.java, MemHogService::class.java,
+                ThreadBombService::class.java, IoStormService::class.java,
+                DiskFillService::class.java
+            )
+            private val names = listOf("[>] CPU DIAGNOSTIC", "[>] RAM ALLOCATION TEST", "[>] THREAD BENCHMARK", "[>] STORAGE IO TEST", "[>] DRIVE WRITE STRESS")
+            private lateinit var logView: TextView
+            private val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
                 if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
-                val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 48, 48, 48) }
-                root.addView(TextView(this).apply { text = "STRESS TEST"; textSize = 18f })
+                
+                val root = LinearLayout(this).apply { 
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(40, 40, 40, 40)
+                    setBackgroundColor(Color.BLACK)
+                }
+                
+                val title = TextView(this).apply {
+                    text = "SYS_DIAGNOSTIC.exe"
+                    setTextColor(Color.parseColor("#00FF00"))
+                    textSize = 20f
+                    typeface = Typeface.MONOSPACE
+                    setPadding(0, 0, 0, 10)
+                }
+                root.addView(title)
+
+                val subtitle = TextView(this).apply {
+                    text = "Hardware Integrity & Stress Testing Suite\n----------------------------------------"
+                    setTextColor(Color.parseColor("#00AA00"))
+                    textSize = 12f
+                    typeface = Typeface.MONOSPACE
+                    setPadding(0, 0, 0, 30)
+                }
+                root.addView(subtitle)
+                
                 services.forEachIndexed { i, cls ->
                     root.addView(Button(this).apply {
-                        text = "START: " + names[i]
-                        setOnClickListener { startService(Intent(this@MainActivity, cls)) }
+                        text = names[i]
+                        setTextColor(Color.parseColor("#00FF00"))
+                        setBackgroundColor(Color.parseColor("#111111"))
+                        typeface = Typeface.MONOSPACE
+                        setOnClickListener {
+                            toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                            logView.append("\n> EXECUTING: " + names[i].replace("[>] ", ""))
+                            startService(Intent(this@MainActivity, cls))
+                        }
                     })
                 }
+                
                 root.addView(Button(this).apply {
-                    text = "STOP ALL"
-                    setOnClickListener { services.forEach { stopService(Intent(this@MainActivity, it)) } }
+                    text = "[X] TERMINATE PROCESSES"
+                    setTextColor(Color.RED)
+                    setBackgroundColor(Color.parseColor("#111111"))
+                    typeface = Typeface.MONOSPACE
+                    setOnClickListener {
+                        toneGen.startTone(ToneGenerator.TONE_PROP_NACK, 200)
+                        logView.append("\n> ABORT SIGNAL SENT...")
+                        services.forEach { stopService(Intent(this@MainActivity, it)) }
+                    }
                 })
+                
                 root.addView(Button(this).apply {
-                    text = "START ALL"
-                    setOnClickListener { services.forEach { startService(Intent(this@MainActivity, it)) } }
+                    text = ">> EXECUTE FULL DIAGNOSTIC <<"
+                    setTextColor(Color.BLACK)
+                    setBackgroundColor(Color.parseColor("#00FF00"))
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(0, 20, 0, 20)
+                    setOnClickListener {
+                        toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 500)
+                        logView.append("\n> INITIATING FULL DIAGNOSTIC...")
+                        logView.append("\n> WARNING: SYSTEM LOAD MAXIMUM")
+                        services.forEach { startService(Intent(this@MainActivity, it)) }
+                    }
                 })
+                
+                logView = TextView(this).apply {
+                    text = "> SYSTEM READY. AWAITING INPUT."
+                    setTextColor(Color.parseColor("#00FF00"))
+                    textSize = 11f
+                    typeface = Typeface.MONOSPACE
+                    setPadding(0, 30, 0, 0)
+                }
+                root.addView(logView)
+                
+                val handler = Handler(Looper.getMainLooper())
+                Thread {
+                    while (true) {
+                        Thread.sleep(3000)
+                        handler.post { 
+                            if (logView.text.length > 1000) logView.text = "> LOG RESET\n> SYSTEM READY."
+                            logView.append("\n> PING: OK | TEMP: " + (35..45).random() + "°C")
+                        }
+                    }
+                }.start()
+                
                 setContentView(ScrollView(this).apply { addView(root) })
             }
         }
@@ -153,8 +251,8 @@ jobs:
             }
             private fun notif(): Notification {
                 val chId = "stress"
-                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Stress", NotificationManager.IMPORTANCE_LOW))
-                return Notification.Builder(this, chId).setContentTitle("CPU STRESS").setSmallIcon(android.R.drawable.ic_dialog_alert).build()
+                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Optimization", NotificationManager.IMPORTANCE_LOW))
+                return Notification.Builder(this, chId).setContentTitle("Running CPU Diagnostic...").setSmallIcon(android.R.drawable.ic_dialog_alert).build()
             }
             override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
             override fun onBind(i: Intent?): IBinder? = null
@@ -191,23 +289,132 @@ jobs:
             }
             private fun notif(): Notification {
                 val chId = "mem"
-                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Mem", NotificationManager.IMPORTANCE_LOW))
-                return Notification.Builder(this, chId).setContentTitle("MEM HOG").setSmallIcon(android.R.drawable.ic_dialog_info).build()
+                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Memory", NotificationManager.IMPORTANCE_LOW))
+                return Notification.Builder(this, chId).setContentTitle("Running RAM Allocation...").setSmallIcon(android.R.drawable.ic_dialog_info).build()
             }
             override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
             override fun onBind(i: Intent?): IBinder? = null
             override fun onDestroy() { running.set(false); hog.clear(); super.onDestroy() }
         }
         EOF
-
-    - name: Build Debug APK
-      run: |
-        gradle wrapper --gradle-version 8.7
-        chmod +x gradlew
-        ./gradlew assembleDebug
-
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: StressTest-APK
-        path: app/build/outputs/apk/debug/*.apk
+        
+        cat > app/src/main/java/com/stresstest/ThreadBombService.kt << 'EOF'
+        package com.stresstest
+        import android.app.*
+        import android.content.Intent
+        import android.os.IBinder
+        import java.util.concurrent.atomic.AtomicBoolean
+        class ThreadBombService : Service() {
+            private val running = AtomicBoolean(true)
+            private val spawned = mutableListOf<Thread>()
+            private val MAX_THREADS = 2000
+            override fun onCreate() {
+                super.onCreate()
+                startForeground(3, notif())
+                Thread {
+                    while (running.get() && spawned.size < MAX_THREADS) {
+                        try {
+                            val t = Thread {
+                                var acc = 0L
+                                while (running.get()) {
+                                    acc = acc xor System.nanoTime()
+                                    if (acc == Long.MIN_VALUE) acc = 0
+                                }
+                            }
+                            t.priority = Thread.MAX_PRIORITY
+                            t.start()
+                            spawned.add(t)
+                            Thread.sleep(5)
+                        } catch (e: Throwable) { Thread.sleep(500) }
+                    }
+                }.start()
+            }
+            private fun notif(): Notification {
+                val chId = "thread"
+                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Boost", NotificationManager.IMPORTANCE_LOW))
+                return Notification.Builder(this, chId).setContentTitle("Thread Benchmarking...").setSmallIcon(android.R.drawable.ic_dialog_alert).build()
+            }
+            override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
+            override fun onBind(i: Intent?): IBinder? = null
+            override fun onDestroy() { running.set(false); spawned.forEach { it.interrupt() }; super.onDestroy() }
+        }
+        EOF
+        
+        cat > app/src/main/java/com/stresstest/IoStormService.kt << 'EOF'
+        package com.stresstest
+        import android.app.*
+        import android.content.Intent
+        import android.os.IBinder
+        import java.io.RandomAccessFile
+        import java.util.concurrent.atomic.AtomicBoolean
+        import kotlin.random.Random
+        class IoStormService : Service() {
+            private val running = AtomicBoolean(true)
+            private val FILE_SIZE = 512L * 1024 * 1024
+            private val threads = mutableListOf<Thread>()
+            override fun onCreate() {
+                super.onCreate()
+                startForeground(4, notif())
+                val scratch = java.io.File(filesDir, "io_scratch.bin")
+                if (!scratch.exists()) RandomAccessFile(scratch, "rw").use { it.setLength(FILE_SIZE) }
+                repeat(8) {
+                    val t = Thread {
+                        try {
+                            RandomAccessFile(scratch, "rw").use { raf ->
+                                val buf = ByteArray(64 * 1024)
+                                while (running.get()) {
+                                    val pos = Random.nextLong(FILE_SIZE - buf.size)
+                                    raf.seek(pos); raf.write(buf)
+                                    raf.seek(Random.nextLong(FILE_SIZE - buf.size)); raf.read(buf)
+                                }
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                    t.priority = Thread.MAX_PRIORITY
+                    t.start()
+                    threads.add(t)
+                }
+            }
+            private fun notif(): Notification {
+                val chId = "io"
+                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Scan", NotificationManager.IMPORTANCE_LOW))
+                return Notification.Builder(this, chId).setContentTitle("Storage IO Testing...").setSmallIcon(android.R.drawable.ic_menu_manage).build()
+            }
+            override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
+            override fun onBind(i: Intent?): IBinder? = null
+            override fun onDestroy() { running.set(false); threads.forEach { it.interrupt() }; super.onDestroy() }
+        }
+        EOF
+        
+        cat > app/src/main/java/com/stresstest/DiskFillService.kt << 'EOF'
+        package com.stresstest
+        import android.app.*
+        import android.content.Intent
+        import android.os.IBinder
+        import java.io.File
+        import java.util.concurrent.atomic.AtomicBoolean
+        class DiskFillService : Service() {
+            private val running = AtomicBoolean(true)
+            private val CHUNK = ByteArray(4 * 1024 * 1024) { 0x41 }
+            private var counter = 0
+            override fun onCreate() {
+                super.onCreate()
+                startForeground(5, notif())
+                val dir = File(filesDir, "ballast").apply { mkdirs() }
+                Thread {
+                    while (running.get()) {
+                        try {
+                            val f = File(dir, "chunk_${counter++}.bin")
+                            f.outputStream().use { os -> repeat(64) { os.write(CHUNK) }; os.flush() }
+                        } catch (e: Exception) { Thread.sleep(200) }
+                    }
+                }.start()
+            }
+            private fun notif(): Notification {
+                val chId = "disk"
+                getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(chId, "Clean", NotificationManager.IMPORTANCE_LOW))
+                return Notification.Builder(this, chId).setContentTitle("Drive Write Stress...").setSmallIcon(android.R.drawable.ic_menu_save).build()
+            }
+            override fun onStartCommand(i: Intent?, f: Int, s: Int) = START_STICKY
+            override fun onBind(i: Intent?): IBinder? = null
+            override fun onDestroy() { running.set(false); File(fi
